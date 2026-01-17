@@ -1,11 +1,10 @@
 let enabled = true;
 
-// CSS: Target broad ytimg patterns including sidebar and lazy-load placeholders
+// 1. Inject CSS immediately (Even before the body exists)
 const style = document.createElement('style');
 style.textContent = `
   img[src*="ytimg.com"]:not([data-thumbnail-replaced]),
-  img[src*="/vi/"]:not([data-thumbnail-replaced]),
-  img[src*="i.ytimg.com"]:not([data-thumbnail-replaced]) { 
+  img[src*="/vi/"]:not([data-thumbnail-replaced]) { 
     opacity: 0 !important; 
   }
   img[data-thumbnail-replaced="true"] { 
@@ -13,7 +12,7 @@ style.textContent = `
     object-fit: cover;
   }
 `;
-document.head.appendChild(style);
+(document.head || document.documentElement).appendChild(style);
 
 function createColorThumbnail(color) {
   return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='90'%3E%3Crect width='100%25' height='100%25' fill='${encodeURIComponent(color)}'/%3E%3C/svg%3E`;
@@ -21,11 +20,10 @@ function createColorThumbnail(color) {
 
 function replaceThumbnail(img) {
   if (!enabled || img.dataset.thumbnailReplaced) return;
-  
   const src = img.src || img.getAttribute('src') || "";
   
-  // Broaden the search to catch thumbnails everywhere (sidebar, grid, search)
-  if (src.includes("ytimg.com") || src.includes("/vi/") || src.includes("youtube.com/vi")) {
+  // Safety check for getColorForURL (from colors.js)
+  if (typeof getColorForURL !== 'undefined' && (src.includes("ytimg.com") || src.includes("/vi/"))) {
     img.src = createColorThumbnail(getColorForURL(src));
     img.dataset.thumbnailReplaced = "true";
   }
@@ -35,10 +33,8 @@ const observer = new MutationObserver((mutations) => {
   if (!enabled) return;
   for (let i = 0; i < mutations.length; i++) {
     const m = mutations[i];
-    
-    // Catch elements added to the DOM
     if (m.addedNodes.length) {
-      m.addedNodes.forEach(n => {
+      for (let n of m.addedNodes) {
         if (n.nodeType === 1) {
           if (n.tagName === "IMG") replaceThumbnail(n);
           else {
@@ -46,38 +42,46 @@ const observer = new MutationObserver((mutations) => {
             for (let j = 0; j < imgs.length; j++) replaceThumbnail(imgs[j]);
           }
         }
-      });
+      }
     }
-    
-    // IMPORTANT: Catch when YouTube changes the 'src' of an existing img (Lazy Loading)
     if (m.type === 'attributes' && m.attributeName === 'src') {
       replaceThumbnail(m.target);
     }
   }
 });
 
-function init() {
-  chrome.storage.local.get('enabled', (res) => {
-    enabled = res.enabled !== false;
-    if (enabled) {
-      // We MUST watch attributes because sidebar/recs swap 'src' on scroll
-      observer.observe(document.body, { 
-        childList: true, 
-        subtree: true, 
-        attributes: true, 
-        attributeFilter: ['src'] 
-      });
-      document.querySelectorAll("img").forEach(replaceThumbnail);
-    }
+function startObserving() {
+  // Observe documentElement because it always exists
+  observer.observe(document.documentElement, { 
+    childList: true, 
+    subtree: true, 
+    attributes: true, 
+    attributeFilter: ['src'] 
   });
+  document.querySelectorAll("img").forEach(replaceThumbnail);
 }
 
+// Get settings and initialize
+chrome.storage.local.get('enabled', (res) => {
+  enabled = res.enabled !== false;
+  if (enabled) {
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startObserving);
+    } else {
+        startObserving();
+    }
+    
+    // Heartbeat to catch SPA transitions and new tab weirdness
+    setInterval(() => {
+      if (enabled) document.querySelectorAll("img").forEach(replaceThumbnail);
+    }, 1000);
+  }
+});
+
+// Listener for settings changes
 chrome.storage.onChanged.addListener((changes) => {
   if (changes.enabled) {
     enabled = changes.enabled.newValue;
     if (!enabled) location.reload();
-    else document.querySelectorAll("img").forEach(replaceThumbnail);
   }
 });
-
-init();
